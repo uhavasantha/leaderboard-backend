@@ -17,6 +17,10 @@ func enableCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 }
+func rootHandler(w http.ResponseWriter, r *http.Request) {
+	enableCORS(w)
+	w.Write([]byte("Backend is running"))
+}
 
 type User struct {
 	ID       int    `json:"id"`
@@ -115,6 +119,7 @@ func updateRandomHandler(w http.ResponseWriter, r *http.Request) {
 func main() {
 	seedUsers(10000)
 
+	http.HandleFunc("/", rootHandler)
 	http.HandleFunc("/leaderboard", leaderboardHandler)
 	http.HandleFunc("/search", searchHandler)
 	http.HandleFunc("/update-random", updateRandomHandler)
