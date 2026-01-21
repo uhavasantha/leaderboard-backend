@@ -2,25 +2,25 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+/* -------------------- CORS -------------------- */
 
 func enableCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 }
-func rootHandler(w http.ResponseWriter, r *http.Request) {
-	enableCORS(w)
-	w.Write([]byte("Backend is running"))
-}
+
+/* -------------------- MODELS -------------------- */
 
 type User struct {
 	ID       int    `json:"id"`
@@ -29,41 +29,79 @@ type User struct {
 	Rank     int    `json:"rank"`
 }
 
+/* -------------------- GLOBAL STATE -------------------- */
+
 var (
-	users []User
-	mu    sync.RWMutex
+	users       []User
+	rankedUsers []User
+	mu          sync.RWMutex
 )
 
-func seedUsers(n int) {
+/* -------------------- SEED USERS (10,000+) -------------------- */
+
+func seedUsers() {
 	rand.Seed(time.Now().UnixNano())
-	for i := 1; i <= n; i++ {
+	for i := 0; i < 10000; i++ {
 		users = append(users, User{
-			ID:       i,
-			Username: "user_" + strconv.Itoa(i),
-			Rating:   rand.Intn(4901) + 100,
+			ID:       i + 1,
+			Username: fmt.Sprintf("user_%d", i),
+			Rating:   rand.Intn(4901-100) + 100,
 		})
 	}
 }
 
-func calculateRanks() []User {
-	mu.RLock()
-	defer mu.RUnlock()
+/* -------------------- TIE-AWARE RANK CALCULATION -------------------- */
 
-	sorted := make([]User, len(users))
-	copy(sorted, users)
+func calculateRanks() {
+	mu.Lock()
+	defer mu.Unlock()
 
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Rating > sorted[j].Rating
+	rankedUsers = make([]User, len(users))
+	copy(rankedUsers, users)
+
+	sort.Slice(rankedUsers, func(i, j int) bool {
+		return rankedUsers[i].Rating > rankedUsers[j].Rating
 	})
 
 	rank := 1
-	for i := 0; i < len(sorted); i++ {
-		if i > 0 && sorted[i].Rating < sorted[i-1].Rating {
-			rank = i + 1
+	prevRating := -1
+	sameCount := 0
+
+	for i := 0; i < len(rankedUsers); i++ {
+		if rankedUsers[i].Rating == prevRating {
+			rankedUsers[i].Rank = rank
+			sameCount++
+		} else {
+			rank = rank + sameCount
+			rankedUsers[i].Rank = rank
+			sameCount = 1
+			prevRating = rankedUsers[i].Rating
 		}
-		sorted[i].Rank = rank
 	}
-	return sorted
+}
+
+/* -------------------- BACKGROUND SCORE UPDATE -------------------- */
+
+func startScoreSimulation() {
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		for range ticker.C {
+			mu.Lock()
+			for i := 0; i < 50; i++ {
+				idx := rand.Intn(len(users))
+				users[idx].Rating = rand.Intn(4901-100) + 100
+			}
+			mu.Unlock()
+			calculateRanks()
+		}
+	}()
+}
+
+/* -------------------- HANDLERS -------------------- */
+
+func rootHandler(w http.ResponseWriter, r *http.Request) {
+	enableCORS(w)
+	w.Write([]byte("Leaderboard Backend is running"))
 }
 
 func leaderboardHandler(w http.ResponseWriter, r *http.Request) {
@@ -71,9 +109,12 @@ func leaderboardHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		return
 	}
-	leaderboard := calculateRanks()
+
+	mu.RLock()
+	defer mu.RUnlock()
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(leaderboard[:100])
+	json.NewEncoder(w).Encode(rankedUsers[:100])
 }
 
 func searchHandler(w http.ResponseWriter, r *http.Request) {
@@ -84,14 +125,15 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 
 	query := strings.ToLower(r.URL.Query().Get("query"))
 	if query == "" {
-		http.Error(w, "query required", http.StatusBadRequest)
+		http.Error(w, "query parameter required", http.StatusBadRequest)
 		return
 	}
 
-	leaderboard := calculateRanks()
-	var result []User
+	mu.RLock()
+	defer mu.RUnlock()
 
-	for _, user := range leaderboard {
+	var result []User
+	for _, user := range rankedUsers {
 		if strings.Contains(strings.ToLower(user.Username), query) {
 			result = append(result, user)
 		}
@@ -101,28 +143,16 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-func updateRandomHandler(w http.ResponseWriter, r *http.Request) {
-	enableCORS(w)
-	if r.Method == http.MethodOptions {
-		return
-	}
-	mu.Lock()
-	defer mu.Unlock()
-
-	for i := 0; i < 50; i++ {
-		idx := rand.Intn(len(users))
-		users[idx].Rating = rand.Intn(4901) + 100
-	}
-	w.Write([]byte("Ratings updated"))
-}
+/* -------------------- MAIN -------------------- */
 
 func main() {
-	seedUsers(10000)
+	seedUsers()
+	calculateRanks()
+	startScoreSimulation()
 
 	http.HandleFunc("/", rootHandler)
 	http.HandleFunc("/leaderboard", leaderboardHandler)
 	http.HandleFunc("/search", searchHandler)
-	http.HandleFunc("/update-random", updateRandomHandler)
 
 	log.Println("Server running on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
