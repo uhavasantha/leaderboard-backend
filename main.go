@@ -6,6 +6,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -154,6 +155,11 @@ func main() {
 	http.HandleFunc("/leaderboard", leaderboardHandler)
 	http.HandleFunc("/search", searchHandler)
 
-	log.Println("Server running on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	log.Println("Server running on :" + port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
